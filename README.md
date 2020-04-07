@@ -1,6 +1,7 @@
 ## STM32-SI5351
 
 * Портировал https://github.com/etherkit/Si5351Arduino под STM32
+* ##Обязательно поставить подтягивающие резисторы
 
 Part of example code for I2C1
 ```C

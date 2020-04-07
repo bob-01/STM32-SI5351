@@ -1,5 +1,5 @@
 /*
- * si5351.cpp - Si5351 library for STM32 & HAL
+ * si5351.cpp - Si5351 library for STM32 & HAL (2020)
  *
  * Copyright (C) 2015 - 2016 Jason Milldrum <milldrum@gmail.com>
  *                           Dana H. Myers <k6jq@comcast.net>
@@ -22,12 +22,18 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <stdint.h>
 #include "si5351.h"
 
+struct Si5351Status dev_status = {0, 0, 0, 0, 0};
+struct Si5351IntStatus dev_int_status = {0, 0, 0, 0};
+I2C_HandleTypeDef * hi2c;
+
+/********************/
+/* Public functions */
+/********************/
 
 /*
- * init(uint8_t xtal_load_c, uint32_t ref_osc_freq, int32_t corr)
+ * si5351_init(I2C_HandleTypeDef *hi2c, uint8_t i2c_addr, uint8_t xtal_load_c, uint32_t ref_osc_freq, int32_t corr)
  *
  * Setup communications to the Si5351 and set the crystal
  * load capacitance.
@@ -42,52 +48,60 @@
  * I2C address.
  *
  */
-bool si5351_init(uint8_t xtal_load_c, uint32_t xo_freq, int32_t corr)
-{
-  xtal_freq[0] = SI5351_XTAL_FREQ;
+bool si5351_init(I2C_HandleTypeDef *_hi2c, uint8_t i2c_addr, uint8_t xtal_load_c, uint32_t xo_freq, int32_t corr) {
+	hi2c = _hi2c;
+  i2c_bus_addr = i2c_addr;
+	xtal_freq[0] = SI5351_XTAL_FREQ;
 
 	// Start by using XO ref osc as default for each PLL
 	plla_ref_osc = SI5351_PLL_INPUT_XO;
 	pllb_ref_osc = SI5351_PLL_INPUT_XO;
 	clkin_div = SI5351_CLKIN_DIV_1;
-	
-  // Wait for SYS_INIT flag to be clear, indicating that device is ready
-  uint8_t status_reg = 0;
-  do
-  {
-    status_reg = si5351_read(SI5351_DEVICE_STATUS);
-  } while (status_reg >> 7 == 1);
 
-  // Set crystal load capacitance
-  si5351_write(SI5351_CRYSTAL_LOAD, (xtal_load_c & SI5351_CRYSTAL_LOAD_MASK) | 0b00010010);
+	// Check for a device on the bus, bail out if it is not there
+	uint8_t reg_val = 0;
 
-  // Set up the XO reference frequency
-  if (xo_freq != 0)
-  {
-    set_ref_freq(xo_freq, SI5351_PLL_INPUT_XO);
-  }
-  else
-  {
-    set_ref_freq(SI5351_XTAL_FREQ, SI5351_PLL_INPUT_XO);
-  }
+	if(reg_val == 0) {
+		// Wait for SYS_INIT flag to be clear, indicating that device is ready
+		uint8_t status_reg = 0;
+		do
+		{
+			status_reg = si5351_read(SI5351_DEVICE_STATUS);
+		} while (status_reg >> 7 == 1);
 
-  // Set the frequency calibration for the XO
-  si5351_set_correction(corr, SI5351_PLL_INPUT_XO);
+		// Set crystal load capacitance
+		si5351_write(SI5351_CRYSTAL_LOAD, (xtal_load_c & SI5351_CRYSTAL_LOAD_MASK) | 0b00010010);
 
-  reset();
+		// Set up the XO reference frequency
+		if (xo_freq != 0)
+		{
+			set_ref_freq(xo_freq, SI5351_PLL_INPUT_XO);
+		}
+		else
+		{
+			set_ref_freq(SI5351_XTAL_FREQ, SI5351_PLL_INPUT_XO);
+		}
 
-  return true;
+		// Set the frequency calibration for the XO
+		set_correction(corr, SI5351_PLL_INPUT_XO);
 
+		si5351_reset();
+
+		return true;
+	}
+	else
+	{
+		return false;
+	}
 }
 
 /*
- * reset(void)
+ * si5351_reset(void)
  *
  * Call to reset the Si5351 to the state initialized by the library.
  *
  */
-void reset(void)
-{
+void si5351_reset(void) {
 	// Initialize the CLK outputs according to flowchart in datasheet
 	// First, turn them off
 	si5351_write(16, 0x80);
@@ -409,7 +423,7 @@ uint8_t si5351_set_freq(uint64_t freq, enum si5351_clock clk)
 }
 
 /*
- * si5351_set_freq_manual(uint64_t freq, uint64_t pll_freq, enum si5351_clock clk)
+ * set_freq_manual(uint64_t freq, uint64_t pll_freq, enum si5351_clock clk)
  *
  * Sets the clock frequency of the specified CLK output using the given PLL
  * frequency. You must ensure that the MS is assigned to the correct PLL and
@@ -423,7 +437,7 @@ uint8_t si5351_set_freq(uint64_t freq, enum si5351_clock clk)
  * clk - Clock output
  *   (use the si5351_clock enum)
  */
-uint8_t si5351_set_freq_manual(uint64_t freq, uint64_t pll_freq, enum si5351_clock clk)
+uint8_t set_freq_manual(uint64_t freq, uint64_t pll_freq, enum si5351_clock clk)
 {
 	struct Si5351RegSet ms_reg;
 	uint8_t int_mode = 0;
@@ -494,7 +508,8 @@ void set_pll(uint64_t pll_freq, enum si5351_pll target_pll)
   // Derive the register values to write
 
   // Prepare an array for parameters to be written to
-  uint8_t params[20];
+  uint8_t __p[20];
+  uint8_t *params = __p;
   uint8_t i = 0;
   uint8_t temp;
 
@@ -539,7 +554,6 @@ void set_pll(uint64_t pll_freq, enum si5351_pll target_pll)
     si5351_write_bulk(SI5351_PLLB_PARAMETERS, i, params);
 		pllb_freq = pll_freq;
   }
-
 }
 
 /*
@@ -557,10 +571,13 @@ void set_pll(uint64_t pll_freq, enum si5351_pll target_pll)
  */
 void set_ms(enum si5351_clock clk, struct Si5351RegSet ms_reg, uint8_t int_mode, uint8_t r_div, uint8_t div_by_4)
 {
-	uint8_t params[20];
+	uint8_t __p[20];
+	uint8_t *params = __p;
+
 	uint8_t i = 0;
  	uint8_t temp;
  	uint8_t reg_val;
+
 
 	if((uint8_t)clk <= (uint8_t)SI5351_CLK5)
 	{
@@ -644,7 +661,6 @@ void set_ms(enum si5351_clock clk, struct Si5351RegSet ms_reg, uint8_t int_mode,
 			ms_div(clk, r_div, div_by_4);
 			break;
 	}
-
 }
 
 /*
@@ -683,8 +699,7 @@ void output_enable(enum si5351_clock clk, uint8_t enable)
  * drive - Desired drive level
  *   (use the si5351_drive enum)
  */
-void si5351_drive_strength(enum si5351_clock clk, enum si5351_drive drive)
-{
+void si5351_drive_strength(enum si5351_clock clk, enum si5351_drive drive) {
   uint8_t reg_val;
   const uint8_t mask = 0x03;
 
@@ -722,15 +737,14 @@ void si5351_drive_strength(enum si5351_clock clk, enum si5351_drive drive)
  * correspond to the flag names for registers 0 and 1 in
  * the Si5351 datasheet.
  */
-
-/*void update_status(void)
+void update_status(void)
 {
+	update_sys_status(&dev_status);
 	update_int_status(&dev_int_status);
 }
-*/
 
 /*
- * si5351_set_correction(int32_t corr, enum si5351_pll_input ref_osc)
+ * set_correction(int32_t corr, enum si5351_pll_input ref_osc)
  *
  * corr - Correction factor in ppb
  * ref_osc - Desired reference oscillator
@@ -755,7 +769,7 @@ void si5351_drive_strength(enum si5351_clock clk, enum si5351_drive drive)
  * should not have to be done again for the same Si5351 and
  * crystal.
  */
-void si5351_set_correction(int32_t corr, enum si5351_pll_input ref_osc)
+void set_correction(int32_t corr, enum si5351_pll_input ref_osc)
 {
 	ref_correction[(uint8_t)ref_osc] = corr;
 
@@ -1153,8 +1167,7 @@ void set_pll_input(enum si5351_pll pll, enum si5351_pll_input input)
  *
  * Set the parameters for the VCXO on the Si5351B.
  */
-void set_vcxo(uint64_t pll_freq, uint8_t ppm)
-{
+void set_vcxo(uint64_t pll_freq, uint8_t ppm) {
 	struct Si5351RegSet pll_reg;
 	uint64_t vcxo_param;
 
@@ -1175,7 +1188,9 @@ void set_vcxo(uint64_t pll_freq, uint8_t ppm)
 	// Derive the register values to write
 
 	// Prepare an array for parameters to be written to
-	uint8_t params[20];
+	uint8_t __p[20];
+  uint8_t *params = __p;
+	
 	uint8_t i = 0;
 	uint8_t temp;
 
@@ -1276,7 +1291,6 @@ void set_ref_freq(uint32_t ref_freq, enum si5351_pll_input ref_osc)
 
 	//si5351_write(SI5351_PLL_INPUT_SOURCE, reg_val);
 }
-
 
 /*********************/
 /* Private functions */
@@ -1555,6 +1569,33 @@ uint64_t multisynth67_calc(uint64_t freq, uint64_t pll_freq, struct Si5351RegSet
 	}
 }
 
+void update_sys_status(struct Si5351Status *status)
+{
+  uint8_t reg_val = 0;
+
+  reg_val = si5351_read(SI5351_DEVICE_STATUS);
+
+  // Parse the register
+  status->SYS_INIT = (reg_val >> 7) & 0x01;
+  status->LOL_B = (reg_val >> 6) & 0x01;
+  status->LOL_A = (reg_val >> 5) & 0x01;
+  status->LOS = (reg_val >> 4) & 0x01;
+  status->REVID = reg_val & 0x03;
+}
+
+void update_int_status(struct Si5351IntStatus *int_status)
+{
+  uint8_t reg_val = 0;
+
+  reg_val = si5351_read(SI5351_INTERRUPT_STATUS);
+
+  // Parse the register
+  int_status->SYS_INIT_STKY = (reg_val >> 7) & 0x01;
+  int_status->LOL_B_STKY = (reg_val >> 6) & 0x01;
+  int_status->LOL_A_STKY = (reg_val >> 5) & 0x01;
+  int_status->LOS_STKY = (reg_val >> 4) & 0x01;
+}
+
 void ms_div(enum si5351_clock clk, uint8_t r_div, uint8_t div_by_4)
 {
 	uint8_t reg_val = 0;
@@ -1712,47 +1753,37 @@ uint8_t select_r_div_ms67(uint64_t *freq)
 	return r_div;
 }
 
-//-----------------------------------
-//-----------------------------------
+// Rebuild functions for STM32
 
-uint8_t si5351_write_bulk(uint8_t addr, uint8_t bytes, uint8_t *data) {
-
-	for(uint8_t i = 0; i < bytes; i++) {
-		si5351_write(addr+i, (uint8_t *)(data[i]));
-	}
-
-	return 0;
-
+/** Write multiple bytes
+ * @param regAddr Register address to write to
+ * @param length Count Bytes
+ * @param data Value to write
+ * @return Status of operation (true = success)
+ */
+uint8_t si5351_write_bulk(uint8_t regAddr, uint8_t length, uint8_t *data) {
+  HAL_StatusTypeDef status = HAL_I2C_Mem_Write(hi2c, i2c_bus_addr << 1, regAddr, I2C_MEMADD_SIZE_8BIT, data, sizeof(uint8_t)*length, 500);
+  return status == HAL_OK;
 }
 
-uint8_t si5351_write(uint8_t addr, uint8_t data) {
-
-	while (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(SI5351_BUS_BASE_ADDR << 1), 3, 100) != HAL_OK) { }
-  
-    HAL_I2C_Mem_Write(&hi2c1,							// i2c handle
-    						  (uint8_t)(SI5351_BUS_BASE_ADDR << 1),		  // i2c address, left aligned
-							  (uint8_t)addr,						            // register address
-							  sizeof(uint8_t),				        // si5351 uses 8bit register addresses
-							  (uint8_t*)(&data),				          // write returned data to this variable
-							  1,								                  // how many bytes to expect returned
-							  100);								                // timeout
-  	while (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(SI5351_BUS_BASE_ADDR << 1), 3, 100) != HAL_OK) { }
-  
-  	return 0;
+/** Write single byte to an 8-bit device register.
+ * @param regAddr Register address to write to
+ * @param data New word value to write
+ * @return Status of operation (true = success)
+ */
+uint8_t si5351_write(uint8_t regAddr, uint8_t data) {
+  HAL_StatusTypeDef status = HAL_I2C_Mem_Write(hi2c, i2c_bus_addr << 1, regAddr, I2C_MEMADD_SIZE_8BIT, &data, sizeof data, 500);
+  return status == HAL_OK;
 }
 
-uint8_t si5351_read(uint8_t addr) {
+uint8_t si5351_read(uint8_t regAddr) {
+	uint8_t reg_val = 0;
 
-	uint8_t * data;
+  HAL_I2C_Master_Transmit(hi2c, i2c_bus_addr << 1, &regAddr, 1, 100);
 
-	while (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(SI5351_BUS_BASE_ADDR << 1), 3, 100) != HAL_OK) { }
+  if (HAL_I2C_Master_Receive(hi2c, i2c_bus_addr << 1, &reg_val, sizeof(uint8_t), 100) == HAL_OK) {
+    return reg_val;
+  }
 
-	HAL_I2C_Mem_Read(&hi2c1,							// i2c handle
-    						(uint8_t)(SI5351_BUS_BASE_ADDR << 1),		// i2c address, left aligned
-							  (uint8_t)addr,						          // register address
-							  I2C_MEMADD_SIZE_8BIT,				      // si5351 uses 8bit register addresses
-							  (uint8_t*)(&data),				        // write returned data to this variable
-							  1,								                // how many bytes to expect returned
-							  100);								              // timeout
-	return data;
+  return 0;
 }
